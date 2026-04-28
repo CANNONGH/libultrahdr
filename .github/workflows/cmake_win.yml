@@ -1,7 +1,10 @@
 name: Build and Test CI - Windows
 # Build and Test CI for windows-latest
 
-on: [ push, pull_request ]
+on: 
+  workflow_dispatch: # ←ここに追加！これで「Run workflow」ボタンが出現します
+  push:
+  pull_request:
 
 jobs:
   build:

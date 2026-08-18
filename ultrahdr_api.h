@@ -1,17 +1,11 @@
 /*
  * Copyright 2024 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 /** \file ultrahdr_api.h
@@ -72,14 +66,29 @@
  *                                               existing API which warrants a major version update.
  *                                               But indicated as a minor update.
  *   1.3.0           1.3.0                       Some bug fixes, introduced new API.
- *   1.4.0           1.4.0                       quality improvements, bug fixes, added new features
- *                                               and api update.
+ *   1.4.0           1.4.0                       quality improvements, bug fixes, added multichannel
+ *                                               metadata, new features and api update.
+ *   1.5.0           1.5.0                       security hardening, buffer safety fixes, added
+ *                                               SMPTE 2094-50 (AGTM) support, standards compliance.
+ *   1.5.1           1.5.1                       enable writing both ISO 21496-1 and XMP metadata in
+ *                                               Android.bp.
+ *   2.0.0           2.0.0                       add HEIF (HEIC) and AVIF multi-format container
+ *                                               support, ISO 21496-1 gain map encapsulation,
+ *                                               modular UltraHdr class architecture, and transparent
+ *                                               multi-codec decoding.
+ *   2.0.1           2.0.1                       support dynamic/system libheif linking with fallback
+ *                                               when gain map API is absent; fix OSS-Fuzz static
+ *                                               linking; auto-detect output format in ultrahdr_app;
+ *                                               fix CI matrix and macOS/Linux runtime RPATH.
+ *   2.0.2           2.0.2                       fix static libheif feature probing in Findlibheif.cmake;
+ *                                               make core target linking PRIVATE to prevent overlinking
+ *                                               downstream consumers.
  */
 
 // This needs to be kept in sync with version in CMakeLists.txt
-#define UHDR_LIB_VER_MAJOR 1
-#define UHDR_LIB_VER_MINOR 4
-#define UHDR_LIB_VER_PATCH 0
+#define UHDR_LIB_VER_MAJOR 2
+#define UHDR_LIB_VER_MINOR 0
+#define UHDR_LIB_VER_PATCH 2
 
 #define UHDR_LIB_VERSION \
   ((UHDR_LIB_VER_MAJOR * 10000) + (UHDR_LIB_VER_MINOR * 100) + UHDR_LIB_VER_PATCH)

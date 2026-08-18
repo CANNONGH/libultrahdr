@@ -1,17 +1,11 @@
 /*
  * Copyright 2022 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 #ifdef _WIN32
@@ -21,6 +15,7 @@
 #endif
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 
@@ -39,10 +34,14 @@ namespace ultrahdr {
 const char* kYCbCrP010FileName = "/data/local/tmp/raw_p010_image.p010";
 const char* kYCbCr420FileName = "/data/local/tmp/raw_yuv420_image.yuv420";
 const char* kSdrJpgFileName = "/data/local/tmp/jpeg_image.jpg";
+const char* kOldAppleFileName = "/data/local/tmp/apple_gainmap_old.jpg";
+const char* kNewAppleFileName = "/data/local/tmp/apple_gainmap_new.jpg";
 #else
-const char* kYCbCrP010FileName = "./data/raw_p010_image.p010";
-const char* kYCbCr420FileName = "./data/raw_yuv420_image.yuv420";
-const char* kSdrJpgFileName = "./data/jpeg_image.jpg";
+const char* kYCbCrP010FileName = "raw_p010_image.p010";
+const char* kYCbCr420FileName = "raw_yuv420_image.yuv420";
+const char* kSdrJpgFileName = "jpeg_image.jpg";
+const char* kOldAppleFileName = "apple_gainmap_old.jpg";
+const char* kNewAppleFileName = "apple_gainmap_new.jpg";
 #endif
 const size_t kImageWidth = 1280;
 const size_t kImageHeight = 720;
@@ -199,13 +198,31 @@ bool UhdrUnCompressedStructWrapper::allocateMemory() {
   return true;
 }
 
+static bool openFileHelper(const char* filename, std::ifstream& ifd,
+                           std::ios_base::openmode mode = std::ios::binary | std::ios::ate) {
+  std::vector<std::string> candidates = {
+      filename,
+      std::string("tests/data/") + filename,
+      std::string("./data/") + filename,
+      std::string("data/") + filename,
+      std::string("../tests/data/") + filename,
+      std::string("third_party/libultrahdr/tests/data/") + filename,
+  };
+  for (const auto& path : candidates) {
+    ifd.open(path, mode);
+    if (ifd.good()) return true;
+    ifd.clear();
+  }
+  return false;
+}
+
 bool UhdrUnCompressedStructWrapper::loadRawResource(const char* fileName) {
   if (!mImg.data) {
     std::cerr << "memory is not allocated, read not possible" << std::endl;
     return false;
   }
-  std::ifstream ifd(fileName, std::ios::binary | std::ios::ate);
-  if (ifd.good()) {
+  std::ifstream ifd;
+  if (openFileHelper(fileName, ifd, std::ios::binary | std::ios::ate)) {
     int bpp = mFormat == YCbCr_p010 ? 2 : 1;
     int size = ifd.tellg();
     int length = mImg.width * mImg.height * bpp * 3 / 2;  // 2x2 subsampling
@@ -290,8 +307,8 @@ static bool writeFile(const char* filename, void*& result, int length) {
 #endif
 
 static bool readFile(const char* fileName, void*& result, size_t maxLength, size_t& length) {
-  std::ifstream ifd(fileName, std::ios::binary | std::ios::ate);
-  if (ifd.good()) {
+  std::ifstream ifd;
+  if (openFileHelper(fileName, ifd, std::ios::binary | std::ios::ate)) {
     length = ifd.tellg();
     if (length > maxLength) {
       std::cerr << "not enough space to read file" << std::endl;
@@ -1400,6 +1417,66 @@ TEST(JpegRTest, DecodeAPIWithInvalidArgs) {
       << "fail, API allows invalid output format";
 }
 
+class TestJpegR : public JpegR {
+ public:
+  using JpegR::applyGainMap;
+};
+
+TEST(JpegRTest, ApplyGainMapInvalidArgs) {
+  TestJpegR uHdrLib;
+  uhdr_raw_image_t sdr_intent{};
+  sdr_intent.fmt = UHDR_IMG_FMT_32bppRGBA8888;
+  sdr_intent.w = 16;
+  sdr_intent.h = 16;
+  sdr_intent.stride[0] = 16;
+  std::vector<uint8_t> sdr_buf(16 * 16 * 4, 128);
+  sdr_intent.planes[0] = sdr_buf.data();
+
+  uhdr_raw_image_t gainmap_img{};
+  gainmap_img.fmt = UHDR_IMG_FMT_8bppYCbCr400;
+  gainmap_img.w = 16;
+  gainmap_img.h = 16;
+  gainmap_img.stride[0] = 16;
+  std::vector<uint8_t> gm_buf(16 * 16, 128);
+  gainmap_img.planes[0] = gm_buf.data();
+
+  uhdr_gainmap_metadata_ext_t metadata("1.0");
+  std::fill_n(metadata.max_content_boost, 3, 2.0f);
+  std::fill_n(metadata.min_content_boost, 3, 1.0f);
+  std::fill_n(metadata.gamma, 3, 1.0f);
+  std::fill_n(metadata.offset_sdr, 3, 0.0f);
+  std::fill_n(metadata.offset_hdr, 3, 0.0f);
+  metadata.hdr_capacity_min = 1.0f;
+  metadata.hdr_capacity_max = 2.0f;
+
+  uhdr_raw_image_t dest{};
+  dest.fmt = UHDR_IMG_FMT_64bppRGBAHalfFloat;
+  dest.w = 16;
+  dest.h = 16;
+  dest.stride[0] = 16;
+  std::vector<uint8_t> dest_buf(16 * 16 * 8);
+  dest.planes[0] = dest_buf.data();
+
+  // Test nullptr dest or plane pointer
+  EXPECT_NE(uHdrLib.applyGainMap(&sdr_intent, &gainmap_img, &metadata, UHDR_CT_LINEAR, dest.fmt, 2.0f, nullptr).error_code, UHDR_CODEC_OK);
+  dest.planes[0] = nullptr;
+  EXPECT_EQ(uHdrLib.applyGainMap(&sdr_intent, &gainmap_img, &metadata, UHDR_CT_LINEAR, dest.fmt, 2.0f, &dest).error_code, UHDR_CODEC_INVALID_PARAM);
+
+  dest.planes[0] = dest_buf.data();
+
+  // Test stride < width
+  dest.stride[0] = 8;
+  EXPECT_EQ(uHdrLib.applyGainMap(&sdr_intent, &gainmap_img, &metadata, UHDR_CT_LINEAR, dest.fmt, 2.0f, &dest).error_code, UHDR_CODEC_INVALID_PARAM);
+  dest.stride[0] = 16;
+
+  // Test invalid output_ct
+  EXPECT_EQ(uHdrLib.applyGainMap(&sdr_intent, &gainmap_img, &metadata, UHDR_CT_UNSPECIFIED, dest.fmt, 2.0f, &dest).error_code, UHDR_CODEC_INVALID_PARAM);
+
+  // Test format mismatch (LINEAR ct with non-64bpp format)
+  dest.fmt = UHDR_IMG_FMT_32bppRGBA1010102;
+  EXPECT_EQ(uHdrLib.applyGainMap(&sdr_intent, &gainmap_img, &metadata, UHDR_CT_LINEAR, dest.fmt, 2.0f, &dest).error_code, UHDR_CODEC_INVALID_PARAM);
+}
+
 TEST(JpegRTest, writeXmpThenRead) {
   uhdr_gainmap_metadata_ext_t metadata_expected("1.0");
   std::fill_n(metadata_expected.max_content_boost, 3, 1.25f);
@@ -1424,7 +1501,9 @@ TEST(JpegRTest, writeXmpThenRead) {
                  reinterpret_cast<const uint8_t*>(xmp.c_str()) + xmp.size());
 
   uhdr_gainmap_metadata_ext_t metadata_read;
-  EXPECT_EQ(getMetadataFromXMP(xmpData.data(), xmpData.size(), &metadata_read).error_code,
+  EXPECT_EQ(getMetadataFromXMP(xmpData.data(), xmpData.size(), /*exif_data=*/nullptr,
+                               /*exif_size=*/0, &metadata_read)
+                .error_code,
             UHDR_CODEC_OK);
   EXPECT_FLOAT_EQ(metadata_expected.max_content_boost[0], metadata_read.max_content_boost[0]);
   EXPECT_FLOAT_EQ(metadata_expected.min_content_boost[0], metadata_read.min_content_boost[0]);
@@ -1436,11 +1515,57 @@ TEST(JpegRTest, writeXmpThenRead) {
   EXPECT_TRUE(metadata_read.use_base_cg);
 }
 
+TEST(JpegRTest, decodeApple) {
+  JpegR decoder;
+  uhdr_compressed_image_t uhdrCompressedImg;
+  for (const auto& fileName : {kOldAppleFileName, kNewAppleFileName}) {
+    std::ifstream ifs;
+    ASSERT_TRUE(openFileHelper(fileName, ifs, std::ios::binary))
+        << "Failed to open test image: " << fileName;
+    std::string content((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
+    ASSERT_GT(content.size(), 4u);
+    ASSERT_EQ(is_uhdr_image(content.data(), content.size()), 1);
+
+    uhdrCompressedImg.data = content.data();
+    uhdrCompressedImg.data_sz = content.size();
+    uhdrCompressedImg.capacity = content.size();
+    uhdrCompressedImg.cg = UHDR_CG_UNSPECIFIED;
+    uhdrCompressedImg.ct = UHDR_CT_UNSPECIFIED;
+    uhdrCompressedImg.range = UHDR_CR_UNSPECIFIED;
+
+    uhdr_codec_private_t* dec = uhdr_create_decoder();
+    ASSERT_NE(dec, nullptr);
+    ASSERT_EQ(uhdr_dec_set_image(dec, &uhdrCompressedImg).error_code, UHDR_CODEC_OK);
+    ASSERT_EQ(uhdr_decode(dec).error_code, UHDR_CODEC_OK);
+
+    const uhdr_mem_block_t* gainMapImg = uhdr_dec_get_gainmap_image(dec);
+    ASSERT_NE(gainMapImg, nullptr);
+    EXPECT_EQ(uhdr_dec_get_gainmap_width(dec), 192u);
+    EXPECT_EQ(uhdr_dec_get_gainmap_height(dec), 256u);
+
+    const uhdr_gainmap_metadata_t* gainmapMetadata = uhdr_dec_get_gainmap_metadata(dec);
+    ASSERT_NE(gainmapMetadata, nullptr);
+
+    const double headroom = fileName == kOldAppleFileName ? 8.0 : 23.1474762;
+    for (int c = 0; c < 3; ++c) {
+      EXPECT_EQ(gainmapMetadata->gamma[c], 1.0f);
+      EXPECT_EQ(gainmapMetadata->offset_sdr[c], 0.0f);
+      EXPECT_EQ(gainmapMetadata->offset_hdr[c], 0.0f);
+      EXPECT_EQ(gainmapMetadata->min_content_boost[c], 1.0f);
+      EXPECT_FLOAT_EQ(gainmapMetadata->max_content_boost[c], headroom);
+    }
+    EXPECT_EQ(gainmapMetadata->hdr_capacity_min, 1.0f);
+    EXPECT_FLOAT_EQ(gainmapMetadata->hdr_capacity_max, headroom);
+
+    uhdr_release_decoder(dec);
+  }
+}
+
 class JpegRAPIEncodeAndDecodeTest
     : public ::testing::TestWithParam<std::tuple<ultrahdr_color_gamut, ultrahdr_color_gamut>> {
  public:
   JpegRAPIEncodeAndDecodeTest()
-      : mP010ColorGamut(std::get<0>(GetParam())), mYuv420ColorGamut(std::get<1>(GetParam())){};
+      : mP010ColorGamut(std::get<0>(GetParam())), mYuv420ColorGamut(std::get<1>(GetParam())) {};
 
   const ultrahdr_color_gamut mP010ColorGamut;
   const ultrahdr_color_gamut mYuv420ColorGamut;

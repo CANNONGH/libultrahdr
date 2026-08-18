@@ -1,17 +1,11 @@
 /*
  * Copyright 2024 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 #include <algorithm>
@@ -58,7 +52,7 @@ uhdr_error_info_t streamReadU8(const std::vector<uint8_t> &data, uint8_t &value,
 }
 
 uhdr_error_info_t streamReadU16(const std::vector<uint8_t> &data, uint16_t &value, size_t &pos) {
-  if (pos + 1 >= data.size()) {
+  if (pos > data.size() || data.size() - pos < 2) {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_MEM_ERROR;
     status.has_detail = 1;
@@ -73,7 +67,7 @@ uhdr_error_info_t streamReadU16(const std::vector<uint8_t> &data, uint16_t &valu
 }
 
 uhdr_error_info_t streamReadU32(const std::vector<uint8_t> &data, uint32_t &value, size_t &pos) {
-  if (pos + 3 >= data.size()) {
+  if (pos > data.size() || data.size() - pos < 4) {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_MEM_ERROR;
     status.has_detail = 1;
@@ -88,7 +82,7 @@ uhdr_error_info_t streamReadU32(const std::vector<uint8_t> &data, uint32_t &valu
 }
 
 uhdr_error_info_t streamReadS32(const std::vector<uint8_t> &data, int32_t &value, size_t &pos) {
-  if (pos + 3 >= data.size()) {
+  if (pos > data.size() || data.size() - pos < 4) {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_MEM_ERROR;
     status.has_detail = 1;

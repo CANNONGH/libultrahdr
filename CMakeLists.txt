@@ -1,25 +1,19 @@
 #
 # Copyright (C) 2023 The Android Open Source Project
 #
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not
-# use this file except in compliance with the License. You may obtain a copy of
-# the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations under
-# the License.
+# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+# https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+# <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+# option. This file may not be copied, modified, or distributed
+# except according to those terms.
 #
 
 cmake_minimum_required(VERSION 3.15)
 cmake_policy(SET CMP0091 NEW)
 
-set(UHDR_MAJOR_VERSION 1)
-set(UHDR_MINOR_VERSION 4)
-set(UHDR_PATCH_VERSION 0)
+set(UHDR_MAJOR_VERSION 2)
+set(UHDR_MINOR_VERSION 0)
+set(UHDR_PATCH_VERSION 2)
 project(libuhdr
         VERSION ${UHDR_MAJOR_VERSION}.${UHDR_MINOR_VERSION}.${UHDR_PATCH_VERSION}
         LANGUAGES C CXX
@@ -132,6 +126,8 @@ option_if_not_defined(UHDR_ENABLE_INSTALL "Enable install and uninstall targets 
 option_if_not_defined(UHDR_ENABLE_INTRINSICS "Build with SIMD acceleration " TRUE)
 option_if_not_defined(UHDR_ENABLE_GLES "Build with GPU acceleration " FALSE)
 option_if_not_defined(UHDR_ENABLE_WERROR "Build with -Werror" FALSE)
+option_if_not_defined(UHDR_ENABLE_SMPTE2094_50 "Build with SMPTE 2094-50 support" FALSE)
+option_if_not_defined(UHDR_ENABLE_HEIF "Build with HEIF/AVIF support via libheif" TRUE)
 
 # These options effect only encoding process.
 # Decoding continues to support both iso and xmp irrespective of this configuration.
@@ -212,6 +208,9 @@ else()
   elseif(DEFINED UHDR_SANITIZE_OPTIONS OR UHDR_BUILD_FUZZERS)
     # Sanitizer libraries could be only DSO's, static linking an entire executable not possible
     message(STATUS "Pure static executable may not possible, disabling '-static' option")
+    set(UHDR_ENABLE_STATIC_LINKING OFF)
+  elseif(MSVC AND DEFINED BUILD_FOR_WINUI AND BUILD_FOR_WINUI)
+    # WinUI builds use /MD (DLL CRT), keep the global setting from parent project
     set(UHDR_ENABLE_STATIC_LINKING OFF)
   elseif(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -380,6 +379,24 @@ find_package(Threads REQUIRED)
 
 include(ExternalProject)
 
+if(UHDR_ENABLE_SMPTE2094_50)
+  if(UHDR_BUILD_DEPS)
+    add_compile_options(-DUHDR_ENABLE_SMPTE2094_50)
+    include(FetchContent)
+    FetchContent_Declare(
+      libsmpte2094_50
+      GIT_REPOSITORY https://github.com/webmproject/libsmpte2094-50.git
+      GIT_TAG v0.1.4)
+    set(OLD_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+    FetchContent_MakeAvailable(libsmpte2094_50)
+    set(BUILD_SHARED_LIBS ${OLD_BUILD_SHARED_LIBS})
+  else()
+    message(WARNING "libsmpte2094-50 package not available")
+    set(UHDR_ENABLE_SMPTE2094_50 OFF)
+  endif()
+endif()
+
 get_directory_property(UHDR_COMPILE_FLAGS COMPILE_OPTIONS)
 string (REPLACE ";" " " UHDR_COMPILE_FLAGS_STR "${UHDR_COMPILE_FLAGS}")
 set(UHDR_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${UHDR_COMPILE_FLAGS_STR}")
@@ -417,6 +434,17 @@ if(DEFINED ANDROID_ABI)
 endif()
 if(DEFINED UHDR_ANDROID_NDK_PATH)
   list(APPEND UHDR_CMAKE_ARGS -DUHDR_ANDROID_NDK_PATH=${UHDR_ANDROID_NDK_PATH})
+endif()
+if(APPLE)
+  if(DEFINED CMAKE_OSX_ARCHITECTURES AND NOT "${CMAKE_OSX_ARCHITECTURES}" STREQUAL "")
+    list(APPEND UHDR_CMAKE_ARGS "-DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}")
+  endif()
+  if(DEFINED CMAKE_OSX_DEPLOYMENT_TARGET AND NOT "${CMAKE_OSX_DEPLOYMENT_TARGET}" STREQUAL "")
+    list(APPEND UHDR_CMAKE_ARGS "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+  endif()
+  if(DEFINED CMAKE_OSX_SYSROOT AND NOT "${CMAKE_OSX_SYSROOT}" STREQUAL "")
+    list(APPEND UHDR_CMAKE_ARGS "-DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT}")
+  endif()
 endif()
 
 # opengl es libraries
@@ -495,7 +523,7 @@ if(NOT JPEG_FOUND)
         SOURCE_DIR ${JPEGTURBO_SOURCE_DIR}
         BINARY_DIR ${JPEGTURBO_BINARY_DIR}
         BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG> --target jpeg-static
-        CMAKE_ARGS ${UHDR_CMAKE_ARGS} -DENABLE_SHARED=0
+        CMAKE_ARGS ${UHDR_CMAKE_ARGS} -DENABLE_SHARED=0 -DWITH_CRT_DLL=ON
         BUILD_BYPRODUCTS ${JPEG_LIBRARIES}
         INSTALL_COMMAND ""
     )
@@ -605,9 +633,110 @@ file(GLOB IMAGE_IO_SRCS_LIST "${THIRD_PARTY_DIR}/image_io/src/**/*.cc")
 
 set(PRIVATE_INCLUDE_DIR ${SOURCE_DIR}/include/ ${JPEG_INCLUDE_DIRS})
 set(PRIVATE_LINK_LIBS ${JPEG_LIBRARIES} Threads::Threads)
+if(UHDR_ENABLE_SMPTE2094_50)
+  list(APPEND PRIVATE_LINK_LIBS smpte2094_50_utils)
+endif()
 if(UHDR_ENABLE_GLES)
   list(APPEND PRIVATE_INCLUDE_DIR ${EGL_INCLUDE_DIRS} ${OPENGLES3_INCLUDE_DIRS})
   list(APPEND PRIVATE_LINK_LIBS ${EGL_LIBRARIES} ${OPENGLES3_LIBRARIES})
+endif()
+if(UHDR_ENABLE_HEIF)
+  if(NOT UHDR_BUILD_DEPS)
+    find_package(libheif QUIET)
+    if(LIBHEIF_FOUND AND NOT LIBHEIF_HAS_GAIN_MAP)
+      message(WARNING "System libheif found but lacks ISO 21496-1 gain map API (PR 1503). "
+                      "Switching to bundled dependency build.")
+      set(LIBHEIF_FOUND FALSE)
+    endif()
+  endif()
+  if(NOT LIBHEIF_FOUND AND UHDR_BUILD_DEPS)
+    find_package(Git QUIET)
+    set(LIBHEIF_TARGET_NAME libheif)
+    set(LIBHEIF_PREFIX_DIR ${CMAKE_CURRENT_BINARY_DIR}/${LIBHEIF_TARGET_NAME})
+    set(LIBHEIF_SOURCE_DIR ${THIRD_PARTY_DIR}/${LIBHEIF_TARGET_NAME})
+    set(LIBHEIF_BINARY_DIR ${LIBHEIF_PREFIX_DIR}/src/${LIBHEIF_TARGET_NAME}-build)
+    file(MAKE_DIRECTORY "${LIBHEIF_SOURCE_DIR}/libheif/api")
+    file(MAKE_DIRECTORY "${LIBHEIF_SOURCE_DIR}/libheif/api/libheif")
+    file(MAKE_DIRECTORY "${LIBHEIF_BINARY_DIR}")
+    file(MAKE_DIRECTORY "${LIBHEIF_BINARY_DIR}/libheif")
+    set(LIBHEIF_INCLUDE_DIRS
+        ${LIBHEIF_SOURCE_DIR}/libheif/api
+        ${LIBHEIF_SOURCE_DIR}/libheif/api/libheif
+        ${LIBHEIF_BINARY_DIR}
+        ${LIBHEIF_BINARY_DIR}/libheif)
+    if(IS_MULTI)
+      if(WIN32 AND NOT MINGW)
+        set(LIBHEIF_LIB_PREFIX ${LIBHEIF_BINARY_DIR}/libheif/Release/)
+      else()
+        set(LIBHEIF_LIB_PREFIX ${LIBHEIF_BINARY_DIR}/libheif/$<CONFIG>/)
+      endif()
+    else()
+      set(LIBHEIF_LIB_PREFIX ${LIBHEIF_BINARY_DIR}/libheif/)
+    endif()
+    if(WIN32 AND NOT MINGW)
+      set(LIBHEIF_LIB heif.lib)
+    else()
+      set(LIBHEIF_LIB ${CMAKE_STATIC_LIBRARY_PREFIX}heif${CMAKE_STATIC_LIBRARY_SUFFIX})
+    endif()
+    set(LIBHEIF_LIBRARIES ${LIBHEIF_LIB_PREFIX}${LIBHEIF_LIB})
+
+    if(GIT_FOUND)
+      set(LIBHEIF_PATCH_CMD ${GIT_EXECUTABLE} checkout 4a3f74bc593ebfc29becc1ed5dd0a61cc66d40e1 -- .
+                            COMMAND ${GIT_EXECUTABLE} apply --ignore-space-change --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/libheif_pr1503.patch)
+    else()
+      set(LIBHEIF_PATCH_CMD git checkout 4a3f74bc593ebfc29becc1ed5dd0a61cc66d40e1 -- .
+                            COMMAND git apply --ignore-space-change --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/libheif_pr1503.patch)
+    endif()
+
+    ExternalProject_Add(${LIBHEIF_TARGET_NAME}
+        GIT_REPOSITORY https://github.com/strukturag/libheif.git
+        GIT_TAG 4a3f74bc593ebfc29becc1ed5dd0a61cc66d40e1
+        PATCH_COMMAND ${LIBHEIF_PATCH_CMD}
+        PREFIX ${LIBHEIF_PREFIX_DIR}
+        SOURCE_DIR ${LIBHEIF_SOURCE_DIR}
+        BINARY_DIR ${LIBHEIF_BINARY_DIR}
+        BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG> --target heif
+        INSTALL_COMMAND ""
+        CMAKE_ARGS ${UHDR_CMAKE_ARGS}
+                   -DBUILD_SHARED_LIBS=OFF
+                   -DCMAKE_DISABLE_FIND_PACKAGE_Doxygen=ON
+                   -DWITH_DOCS=OFF
+                   -DENABLE_PLUGIN_LOADING=ON
+                   -DWITH_EXAMPLES=OFF
+                   -DWITH_GDK_PIXBUF=OFF
+                   -DWITH_LIBSHARPYUV=OFF
+                   -DBUILD_TESTING=OFF
+                   -DWITH_EXPERIMENTAL_GAIN_MAP=ON
+                   -DWITH_HEIFIO=OFF
+                   -DWITH_JPEG_DECODER=OFF
+                   -DWITH_JPEG_ENCODER=OFF
+                   -DWITH_OpenJPEG=OFF
+                   -DWITH_OpenJPH=OFF
+                   -DWITH_LIBPNG=OFF
+                   -DWITH_LIBTIFF=OFF
+                   -DWITH_FFMPEG_DECODER=OFF
+        BUILD_BYPRODUCTS ${LIBHEIF_LIBRARIES}
+    )
+    if(NOT TARGET libheif::heif)
+      add_library(libheif::heif UNKNOWN IMPORTED)
+      add_dependencies(libheif::heif ${LIBHEIF_TARGET_NAME})
+      set_target_properties(libheif::heif PROPERTIES
+        IMPORTED_LOCATION "${LIBHEIF_LIBRARIES}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBHEIF_INCLUDE_DIRS}"
+        INTERFACE_COMPILE_DEFINITIONS "LIBHEIF_STATIC_BUILD;WITH_EXPERIMENTAL_GAIN_MAP=1"
+        INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS}"
+      )
+    endif()
+    set(LIBHEIF_FOUND TRUE)
+  endif()
+  if(LIBHEIF_FOUND)
+    message(STATUS "Found libheif: ${LIBHEIF_LIBRARIES}")
+    add_compile_options(-DUHDR_ENABLE_HEIF)
+    list(APPEND PRIVATE_LINK_LIBS libheif::heif)
+  else()
+    message(WARNING "libheif not found. Building without HEIF/AVIF support.")
+    set(UHDR_ENABLE_HEIF FALSE)
+  endif()
 endif()
 
 ###########################################################
@@ -625,6 +754,9 @@ add_library(${UHDR_CORE_LIB_NAME} STATIC ${UHDR_CORE_SRCS_LIST})
 target_compile_options(${UHDR_CORE_LIB_NAME} PRIVATE ${UHDR_WERROR_FLAGS})
 if(NOT JPEG_FOUND)
   add_dependencies(${UHDR_CORE_LIB_NAME} ${JPEGTURBO_TARGET_NAME})
+endif()
+if(TARGET libheif)
+  add_dependencies(${UHDR_CORE_LIB_NAME} ${LIBHEIF_TARGET_NAME})
 endif()
 if(NOT MSVC)
   target_compile_options(${UHDR_CORE_LIB_NAME} PRIVATE -Wall -Wextra -Wshadow)
@@ -676,6 +808,9 @@ endif()
 if(UHDR_BUILD_TESTS)
   add_executable(ultrahdr_unit_test ${UHDR_TEST_SRCS_LIST})
   add_dependencies(ultrahdr_unit_test ${GTEST_TARGET_NAME} ${UHDR_CORE_LIB_NAME})
+  if(TARGET libheif)
+    add_dependencies(ultrahdr_unit_test ${LIBHEIF_TARGET_NAME})
+  endif()
   target_compile_options(ultrahdr_unit_test PRIVATE ${UHDR_WERROR_FLAGS})
   target_include_directories(ultrahdr_unit_test PRIVATE
     ${PRIVATE_INCLUDE_DIR}
@@ -684,8 +819,15 @@ if(UHDR_BUILD_TESTS)
   if(UHDR_BUILD_FUZZERS)
     target_link_options(ultrahdr_unit_test PRIVATE -fsanitize=fuzzer-no-link)
   endif()
-  target_link_libraries(ultrahdr_unit_test ${UHDR_CORE_LIB_NAME} ${GTEST_BOTH_LIBRARIES})
-  add_test(NAME UHDRUnitTests, COMMAND ultrahdr_unit_test)
+  if(UHDR_ENABLE_SMPTE2094_50)
+    target_link_libraries(ultrahdr_unit_test ${UHDR_CORE_LIB_NAME} ${GTEST_BOTH_LIBRARIES} smpte2094_50_utils ${PRIVATE_LINK_LIBS})
+  else()
+    target_link_libraries(ultrahdr_unit_test ${UHDR_CORE_LIB_NAME} ${GTEST_BOTH_LIBRARIES} ${PRIVATE_LINK_LIBS})
+  endif()
+  if(LIBHEIF_LIB_PREFIX)
+    set_target_properties(ultrahdr_unit_test PROPERTIES BUILD_RPATH "${LIBHEIF_LIB_PREFIX}")
+  endif()
+  add_test(NAME UHDRUnitTests COMMAND ultrahdr_unit_test)
 endif()
 
 if(UHDR_BUILD_BENCHMARK)

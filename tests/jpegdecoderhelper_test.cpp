@@ -1,23 +1,19 @@
 /*
  * Copyright 2022 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 #include <gtest/gtest.h>
 
 #include <fstream>
 #include <iostream>
+#include <string>
+#include <vector>
 
 #include "ultrahdr/ultrahdrcommon.h"
 #include "ultrahdr/jpegdecoderhelper.h"
@@ -33,10 +29,10 @@ namespace ultrahdr {
 #define YUV_ICC_IMAGE "/data/local/tmp/minnie-320x240-yuv-icc.jpg"
 #define GREY_IMAGE "/data/local/tmp/minnie-320x240-y.jpg"
 #else
-#define YUV_IMAGE "./data/minnie-320x240-yuv.jpg"
-#define RGB_IMAGE "./data/minnie-320x240-rgb.jpg"
-#define YUV_ICC_IMAGE "./data/minnie-320x240-yuv-icc.jpg"
-#define GREY_IMAGE "./data/minnie-320x240-y.jpg"
+#define YUV_IMAGE "minnie-320x240-yuv.jpg"
+#define RGB_IMAGE "minnie-320x240-rgb.jpg"
+#define YUV_ICC_IMAGE "minnie-320x240-yuv-icc.jpg"
+#define GREY_IMAGE "minnie-320x240-y.jpg"
 #endif
 #define YUV_IMAGE_SIZE 20193
 #define RGB_IMAGE_SIZE 20200
@@ -66,14 +62,23 @@ JpegDecoderHelperTest::JpegDecoderHelperTest() {}
 JpegDecoderHelperTest::~JpegDecoderHelperTest() {}
 
 static bool loadFile(const char filename[], JpegDecoderHelperTest::Image* result) {
-  std::ifstream ifd(filename, std::ios::binary | std::ios::ate);
-  if (ifd.good()) {
-    int size = ifd.tellg();
-    ifd.seekg(0, std::ios::beg);
-    result->buffer.reset(new uint8_t[size]);
-    ifd.read(reinterpret_cast<char*>(result->buffer.get()), size);
-    ifd.close();
-    return true;
+  std::vector<std::string> candidates = {
+      filename,
+      std::string("third_party/libultrahdr/tests/data/") + filename,
+      std::string("tests/data/") + filename,
+      std::string("./data/") + filename,
+      std::string("../tests/data/") + filename,
+  };
+  for (const auto& path : candidates) {
+    std::ifstream ifd(path, std::ios::binary | std::ios::ate);
+    if (ifd.good()) {
+      int size = ifd.tellg();
+      ifd.seekg(0, std::ios::beg);
+      result->buffer.reset(new uint8_t[size]);
+      ifd.read(reinterpret_cast<char*>(result->buffer.get()), size);
+      ifd.close();
+      return true;
+    }
   }
   return false;
 }

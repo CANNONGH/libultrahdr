@@ -1,17 +1,11 @@
 /*
  * Copyright 2024 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 #include <gtest/gtest.h>
@@ -26,7 +20,7 @@
 #ifdef __ANDROID__
 #define INPUT_IMAGE "/data/local/tmp/raw_p010_image.p010"
 #else
-#define INPUT_IMAGE "./data/raw_p010_image.p010"
+#define INPUT_IMAGE "raw_p010_image.p010"
 #endif
 
 #define OUTPUT_P010_IMAGE "output.p010"
@@ -101,30 +95,39 @@ static bool writeFile(std::string prefixName, uhdr_raw_image_t* img) {
 namespace ultrahdr {
 
 static bool loadFile(const char* filename, uhdr_raw_image_t* handle) {
-  std::ifstream ifd(filename, std::ios::binary);
-  if (ifd.good()) {
-    if (handle->fmt == UHDR_IMG_FMT_24bppYCbCrP010) {
-      const int bpp = 2;
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_Y]), handle->w * handle->h * bpp);
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_UV]),
-               (handle->w / 2) * (handle->h / 2) * bpp * 2);
-      return true;
-    } else if (handle->fmt == UHDR_IMG_FMT_12bppYCbCr420) {
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_Y]), handle->w * handle->h);
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_U]), (handle->w / 2) * (handle->h / 2));
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_V]), (handle->w / 2) * (handle->h / 2));
-      return true;
-    } else if (handle->fmt == UHDR_IMG_FMT_32bppRGBA8888 ||
-               handle->fmt == UHDR_IMG_FMT_64bppRGBAHalfFloat ||
-               handle->fmt == UHDR_IMG_FMT_32bppRGBA1010102) {
-      int bpp = handle->fmt == UHDR_IMG_FMT_64bppRGBAHalfFloat ? 8 : 4;
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_PACKED]), handle->w * handle->h * bpp);
-      return true;
-    } else if (handle->fmt == UHDR_IMG_FMT_8bppYCbCr400) {
-      ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_Y]), handle->w * handle->h);
-      return true;
+  std::vector<std::string> candidates = {
+      filename,
+      std::string("tests/data/") + filename,
+      std::string("./data/") + filename,
+      std::string("data/") + filename,
+      std::string("../tests/data/") + filename,
+      std::string("third_party/libultrahdr/tests/data/") + filename,
+  };
+  for (const auto& path : candidates) {
+    std::ifstream ifd(path, std::ios::binary);
+    if (ifd.good()) {
+      if (handle->fmt == UHDR_IMG_FMT_24bppYCbCrP010) {
+        const int bpp = 2;
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_Y]), handle->w * handle->h * bpp);
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_UV]),
+                 (handle->w / 2) * (handle->h / 2) * bpp * 2);
+        return true;
+      } else if (handle->fmt == UHDR_IMG_FMT_12bppYCbCr420) {
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_Y]), handle->w * handle->h);
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_U]), (handle->w / 2) * (handle->h / 2));
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_V]), (handle->w / 2) * (handle->h / 2));
+        return true;
+      } else if (handle->fmt == UHDR_IMG_FMT_32bppRGBA8888 ||
+                 handle->fmt == UHDR_IMG_FMT_64bppRGBAHalfFloat ||
+                 handle->fmt == UHDR_IMG_FMT_32bppRGBA1010102) {
+        int bpp = handle->fmt == UHDR_IMG_FMT_64bppRGBAHalfFloat ? 8 : 4;
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_PACKED]), handle->w * handle->h * bpp);
+        return true;
+      } else if (handle->fmt == UHDR_IMG_FMT_8bppYCbCr400) {
+        ifd.read(static_cast<char*>(handle->planes[UHDR_PLANE_Y]), handle->w * handle->h);
+        return true;
+      }
     }
-    return false;
   }
   std::cerr << "unable to open file : " << filename << std::endl;
   return false;

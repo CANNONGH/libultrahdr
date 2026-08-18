@@ -1,23 +1,20 @@
 /*
  * Copyright 2022 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
 #include "ultrahdr/gainmapmath.h"
+#ifdef UHDR_ENABLE_SMPTE2094_50
+#include "smpte2094_50/smpte2094_50.h"
+#endif
 
 namespace ultrahdr {
 
@@ -535,6 +532,23 @@ TEST_F(GainMapMathTest, ColorDivideFloat) {
   EXPECT_FLOAT_EQ(e2.r, e1.r / 4.0f);
   EXPECT_FLOAT_EQ(e2.g, e1.g / 4.0f);
   EXPECT_FLOAT_EQ(e2.b, e1.b / 4.0f);
+}
+
+TEST_F(GainMapMathTest, PutRgb888PixelWritesGreenChannel) {
+  uint8_t data[3] = {};
+  uhdr_raw_image_t image{};
+  image.fmt = UHDR_IMG_FMT_24bppRGB888;
+  image.w = 1;
+  image.h = 1;
+  image.planes[UHDR_PLANE_PACKED] = data;
+  image.stride[UHDR_PLANE_PACKED] = 1;
+
+  Color pixel = {{{0.1f, 0.5f, 0.9f}}};
+  putRgb888Pixel(&image, 0, 0, pixel);
+
+  EXPECT_EQ(26, data[0]);
+  EXPECT_EQ(128, data[1]);
+  EXPECT_EQ(230, data[2]);
 }
 
 TEST_F(GainMapMathTest, SrgbLuminance) {
@@ -1432,6 +1446,16 @@ TEST_F(GainMapMathTest, GetP010Pixel) {
   for (size_t y = 0; y < 4; ++y) {
     for (size_t x = 0; x < 4; ++x) {
       EXPECT_YUV_NEAR(getP010Pixel(&image, x, y), colors[y][x]);
+    }
+  }
+}
+
+TEST_F(GainMapMathTest, GetP010PixelOddWidth) {
+  auto image = P010Image();
+  image.w = 3;
+  for (size_t y = 0; y < 4; ++y) {
+    for (size_t x = 0; x < 3; ++x) {
+      EXPECT_NO_FATAL_FAILURE(getP010Pixel(&image, x, y));
     }
   }
 }

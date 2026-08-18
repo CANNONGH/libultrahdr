@@ -1,17 +1,11 @@
 /*
  * Copyright 2022 The Android Open Source Project
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+ * https://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+ * <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
+ * option. This file may not be copied, modified, or distributed
+ * except according to those terms.
  */
 
 #ifdef _WIN32
@@ -140,7 +134,13 @@ unsigned int GetCPUCoreCount() { return (std::max)(1u, std::thread::hardware_con
 
 JpegR::JpegR(void* uhdrGLESCtxt, int mapDimensionScaleFactor, int mapCompressQuality,
              bool useMultiChannelGainMap, float gamma, uhdr_enc_preset_t preset,
-             float minContentBoost, float maxContentBoost, float targetDispPeakBrightness) {
+             float minContentBoost, float maxContentBoost, float targetDispPeakBrightness)
+    : UltraHdr(uhdrGLESCtxt, mapDimensionScaleFactor, mapCompressQuality, useMultiChannelGainMap,
+               gamma, preset, minContentBoost, maxContentBoost, targetDispPeakBrightness) {}
+
+UltraHdr::UltraHdr(void* uhdrGLESCtxt, int mapDimensionScaleFactor, int mapCompressQuality,
+                   bool useMultiChannelGainMap, float gamma, uhdr_enc_preset_t preset,
+                   float minContentBoost, float maxContentBoost, float targetDispPeakBrightness) {
   mUhdrGLESCtxt = uhdrGLESCtxt;
   mMapDimensionScaleFactor = mapDimensionScaleFactor;
   mMapCompressQuality = mapCompressQuality;
@@ -433,8 +433,8 @@ uhdr_error_info_t JpegR::encodeJPEGR(uhdr_compressed_image_t* base_img_compresse
   return g_no_error;
 }
 
-uhdr_error_info_t JpegR::convertYuv(uhdr_raw_image_t* image, uhdr_color_gamut_t src_encoding,
-                                    uhdr_color_gamut_t dst_encoding) {
+uhdr_error_info_t UltraHdr::convertYuv(uhdr_raw_image_t* image, uhdr_color_gamut_t src_encoding,
+                                       uhdr_color_gamut_t dst_encoding) {
   const std::array<float, 9>* coeffs_ptr = nullptr;
   uhdr_error_info_t status = g_no_error;
 
@@ -527,10 +527,11 @@ uhdr_error_info_t JpegR::compressGainMap(uhdr_raw_image_t* gainmap_img,
   return jpeg_enc_obj->compressImage(gainmap_img, mMapCompressQuality, nullptr, 0);
 }
 
-uhdr_error_info_t JpegR::generateGainMap(uhdr_raw_image_t* sdr_intent, uhdr_raw_image_t* hdr_intent,
-                                         uhdr_gainmap_metadata_ext_t* gainmap_metadata,
-                                         std::unique_ptr<uhdr_raw_image_ext_t>& gainmap_img,
-                                         bool sdr_is_601, bool use_luminance) {
+uhdr_error_info_t UltraHdr::generateGainMap(uhdr_raw_image_t* sdr_intent,
+                                            uhdr_raw_image_t* hdr_intent,
+                                            uhdr_gainmap_metadata_ext_t* gainmap_metadata,
+                                            std::unique_ptr<uhdr_raw_image_ext_t>& gainmap_img,
+                                            bool sdr_is_601, bool use_luminance) {
   uhdr_error_info_t status = g_no_error;
 
   if (sdr_intent->fmt != UHDR_IMG_FMT_24bppYCbCr444 &&
@@ -1207,11 +1208,33 @@ uhdr_error_info_t JpegR::appendGainMap(uhdr_compressed_image_t* sdr_intent_compr
   uhdr_compressed_image_t* final_primary_jpg_image_ptr =
       new_jpg_image.data_sz == 0 ? sdr_intent_compressed : &new_jpg_image;
 
+  // If the primary JPEG already carries an ICC profile and none was passed in, reuse it so the
+  // "Write ICC" block below emits it; the APP marker skip in the reorder loop would otherwise
+  // silently drop it from the output.
+  if (pIcc == nullptr && decoder.getICCSize() > 0) {
+    pIcc = decoder.getICCPtr();
+    icc_size = decoder.getICCSize();
+  }
+
   size_t pos = 0;
   // Begin primary image
   // Write SOI
   UHDR_ERR_CHECK(Write(dest, &photos_editing_formats::image_io::JpegMarker::kStart, 1, pos));
   UHDR_ERR_CHECK(Write(dest, &photos_editing_formats::image_io::JpegMarker::kSOI, 1, pos));
+
+  // -- Extract APP0(JFIF) from base JPEG and write it first (per JFIF spec, APP0 must be first) --
+  {
+    uint8_t* base_data = (uint8_t*)final_primary_jpg_image_ptr->data;
+    size_t base_size = final_primary_jpg_image_ptr->data_sz;
+    // OOB check: need marker (2 bytes) + segment length field (2 bytes)
+    if (base_size >= 6 && base_data[2] == 0xFF && base_data[3] == 0xE0) {
+        int jfif_len = (base_data[4] << 8) | base_data[5];
+        // OOB check: the segment must fit within the base data
+        if (2 + 2 + static_cast<size_t>(jfif_len) <= base_size) {
+            UHDR_ERR_CHECK(Write(dest, &base_data[2], 2 + jfif_len, pos));
+        }
+    }
+  }
 
   // Write EXIF
   if (pExif != nullptr) {
@@ -1268,12 +1291,69 @@ uhdr_error_info_t JpegR::appendGainMap(uhdr_compressed_image_t* sdr_intent_compr
     UHDR_ERR_CHECK(Write(dest, &zero, 1, pos));  // 2 bytes writer_version: (00 00)
   }
 
-  // Prepare and write MPF
+  // -- Parse and reorder primary JPEG data --
+  // Standard order: SOI -> APP0(JFIF) -> APP1(XMP) -> APP2(ICC) -> APP2(ISO) -> DQT/SOF/DHT -> APP2(MPF) -> SOS
+  // libjpeg-turbo encodes the base JPEG as: SOI -> APP0(JFIF) -> DQTx2 -> SOF0 -> DHTx4 -> SOS -> data -> EOI
+  // We need to:
+  //   1. Extract APP0(JFIF) and write it immediately after SOI (before our XMP/ISO/ICC)
+  //   2. Write DQT/SOF/DHT from the base JPEG
+  //   3. Then write MPF (right before SOS)
+  //   4. Then write SOS + compressed data
+
+  uint8_t* base_data = (uint8_t*)final_primary_jpg_image_ptr->data;
+  size_t base_size = final_primary_jpg_image_ptr->data_sz;
+  size_t base_pos = 2;  // skip SOI (base_data[0..1] = FF D8)
+
+  // -- Skip APP0(JFIF) in base JPEG data (already written above) --
+  if (base_pos + 4 <= base_size && base_data[base_pos] == 0xFF && base_data[base_pos+1] == 0xE0) {
+      int jfif_len = (base_data[base_pos+2] << 8) | base_data[base_pos+3];
+      base_pos += 2 + jfif_len;
+  }
+
+  // -- Write marker segments (DQT, SOF, DHT) up to SOS --
+  size_t sos_offset = 0;
+  while (base_pos < base_size) {
+      if (base_data[base_pos] != 0xFF) break;
+      if (base_pos + 1 >= base_size) break;  // guard against truncated data
+      uint8_t marker = base_data[base_pos+1];
+      if (marker == 0xDA) {            // SOS - stop here, MPF goes before this
+          sos_offset = base_pos;
+          break;
+      }
+      if (marker == 0x00 || marker == 0xFF) { base_pos += 2; continue; }
+      if (marker >= 0xD0 && marker <= 0xD7) { base_pos += 2; continue; }
+      if (marker == 0xD9) break;      // EOI - shouldn't happen here but guard
+      // OOB check: need at least 2 bytes for the segment length field
+      if (base_pos + 4 > base_size) break;
+      int seg_len = (base_data[base_pos+2] << 8) | base_data[base_pos+3];
+      // OOB check: the segment must fit within the remaining data
+      if (base_pos + 2 + static_cast<size_t>(seg_len) > base_size) break;
+      // Skip APP markers (0xE0-0xEF) to avoid duplicating metadata
+      // (JFIF/XMP/ICC/ISO) that was already written above
+      if (marker >= 0xE0 && marker <= 0xEF) { base_pos += 2 + seg_len; continue; }
+      UHDR_ERR_CHECK(Write(dest, &base_data[base_pos], 2 + seg_len, pos));
+      base_pos += 2 + seg_len;
+  }
+
+  // The reorder path depends on locating SOS in the base JPEG; without it the primary image
+  // would be emitted without its entropy-coded data, producing a corrupt file.
+  if (sos_offset == 0) {
+    uhdr_error_info_t status;
+    status.error_code = UHDR_CODEC_INVALID_PARAM;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail,
+             "SOS marker not found while reordering base jpeg segments, unable to append gainmap");
+    return status;
+  }
+
+  // -- Write MPF (right before SOS, per CIPA DC-007) --
   {
     const size_t length = 2 + calculateMpfSize();
     const uint8_t lengthH = ((length >> 8) & 0xff);
     const uint8_t lengthL = (length & 0xff);
-    size_t primary_image_size = pos + length + final_primary_jpg_image_ptr->data_sz;
+    // primary image size = bytes written so far + MPF APP2 block (2 bytes marker + length)
+    //                    + SOS through EOI copied from the base JPEG
+    size_t primary_image_size = pos + 2 + length + (base_size - sos_offset);
     // between APP2 + package size + signature
     // ff e2 00 58 4d 50 46 00
     // 2 + 2 + 4 = 8 (bytes)
@@ -1288,10 +1368,9 @@ uhdr_error_info_t JpegR::appendGainMap(uhdr_compressed_image_t* sdr_intent_compr
     UHDR_ERR_CHECK(Write(dest, (void*)mpf->getData(), mpf->getLength(), pos));
   }
 
-  // Write primary image
-  UHDR_ERR_CHECK(Write(dest, (uint8_t*)final_primary_jpg_image_ptr->data + 2,
-                       final_primary_jpg_image_ptr->data_sz - 2, pos));
-  // Finish primary image
+  // -- Write SOS + compressed data + EOI --
+  UHDR_ERR_CHECK(Write(dest, &base_data[sos_offset], base_size - sos_offset, pos));
+  // Finish primary image - EOI is already included in the base JPEG data
 
   // Begin secondary image (gain map)
   // Write SOI
@@ -1350,9 +1429,9 @@ uhdr_error_info_t JpegR::getJPEGRInfo(uhdr_compressed_image_t* uhdr_compressed_i
   return g_no_error;
 }
 
-uhdr_error_info_t JpegR::parseGainMapMetadata(uint8_t* iso_data, size_t iso_size, uint8_t* xmp_data,
-                                              size_t xmp_size,
-                                              uhdr_gainmap_metadata_ext_t* uhdr_metadata) {
+uhdr_error_info_t UltraHdr::parseGainMapMetadata(uint8_t* iso_data, size_t iso_size, uint8_t* xmp_data,
+                                                 size_t xmp_size, uint8_t* exif_data, int exif_size,
+                                                 uhdr_gainmap_metadata_ext_t* uhdr_metadata) {
   if (iso_size > 0) {
     if (iso_size < kIsoNameSpace.size() + 1) {
       uhdr_error_info_t status;
@@ -1373,7 +1452,7 @@ uhdr_error_info_t JpegR::parseGainMapMetadata(uint8_t* iso_data, size_t iso_size
     UHDR_ERR_CHECK(uhdr_gainmap_metadata_frac::gainmapMetadataFractionToFloat(&decodedMetadata,
                                                                               uhdr_metadata));
   } else if (xmp_size > 0) {
-    UHDR_ERR_CHECK(getMetadataFromXMP(xmp_data, xmp_size, uhdr_metadata));
+    UHDR_ERR_CHECK(getMetadataFromXMP(xmp_data, xmp_size, exif_data, exif_size, uhdr_metadata));
   } else {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_INVALID_PARAM;
@@ -1416,10 +1495,11 @@ uhdr_error_info_t JpegR::decodeJPEGR(uhdr_compressed_image_t* uhdr_compressed_im
 
   uhdr_gainmap_metadata_ext_t uhdr_metadata;
   if (gainmap_metadata != nullptr || output_ct != UHDR_CT_SRGB) {
-    UHDR_ERR_CHECK(parseGainMapMetadata(static_cast<uint8_t*>(jpeg_dec_obj_gm.getIsoMetadataPtr()),
-                                        jpeg_dec_obj_gm.getIsoMetadataSize(),
-                                        static_cast<uint8_t*>(jpeg_dec_obj_gm.getXMPPtr()),
-                                        jpeg_dec_obj_gm.getXMPSize(), &uhdr_metadata))
+    UHDR_ERR_CHECK(parseGainMapMetadata(
+        static_cast<uint8_t*>(jpeg_dec_obj_gm.getIsoMetadataPtr()),
+        jpeg_dec_obj_gm.getIsoMetadataSize(), static_cast<uint8_t*>(jpeg_dec_obj_gm.getXMPPtr()),
+        jpeg_dec_obj_gm.getXMPSize(), static_cast<uint8_t*>(jpeg_dec_obj_sdr.getEXIFPtr()),
+        jpeg_dec_obj_sdr.getEXIFSize(), &uhdr_metadata))
     if (gainmap_metadata != nullptr) {
       std::copy(uhdr_metadata.min_content_boost, uhdr_metadata.min_content_boost + 3,
                 gainmap_metadata->min_content_boost);
@@ -1450,11 +1530,49 @@ uhdr_error_info_t JpegR::decodeJPEGR(uhdr_compressed_image_t* uhdr_compressed_im
   return g_no_error;
 }
 
-uhdr_error_info_t JpegR::applyGainMap(uhdr_raw_image_t* sdr_intent, uhdr_raw_image_t* gainmap_img,
+uhdr_error_info_t UltraHdr::applyGainMap(uhdr_raw_image_t* sdr_intent, uhdr_raw_image_t* gainmap_img,
                                       uhdr_gainmap_metadata_ext_t* gainmap_metadata,
                                       uhdr_color_transfer_t output_ct,
                                       [[maybe_unused]] uhdr_img_fmt_t output_format,
                                       float max_display_boost, uhdr_raw_image_t* dest) {
+  if (dest == nullptr || dest->planes[UHDR_PLANE_PACKED] == nullptr) {
+    uhdr_error_info_t status;
+    status.error_code = UHDR_CODEC_INVALID_PARAM;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail,
+             "apply gainmap method received nullptr for destination image or plane pointer");
+    return status;
+  }
+  if (dest->stride[UHDR_PLANE_PACKED] < dest->w) {
+    uhdr_error_info_t status;
+    status.error_code = UHDR_CODEC_INVALID_PARAM;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail,
+             "destination stride (%u) cannot be less than image width (%u)",
+             dest->stride[UHDR_PLANE_PACKED], dest->w);
+    return status;
+  }
+  if (output_ct != UHDR_CT_LINEAR && output_ct != UHDR_CT_HLG && output_ct != UHDR_CT_PQ) {
+    uhdr_error_info_t status;
+    status.error_code = UHDR_CODEC_INVALID_PARAM;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail,
+             "apply gainmap method expects output color transfer to be one of "
+             "{UHDR_CT_LINEAR, UHDR_CT_HLG, UHDR_CT_PQ}. Received %d",
+             output_ct);
+    return status;
+  }
+  if ((output_ct == UHDR_CT_LINEAR && dest->fmt != UHDR_IMG_FMT_64bppRGBAHalfFloat) ||
+      ((output_ct == UHDR_CT_HLG || output_ct == UHDR_CT_PQ) &&
+       dest->fmt != UHDR_IMG_FMT_32bppRGBA1010102)) {
+    uhdr_error_info_t status;
+    status.error_code = UHDR_CODEC_INVALID_PARAM;
+    status.has_detail = 1;
+    snprintf(status.detail, sizeof status.detail,
+             "unsupported destination pixel format %d for output color transfer %d",
+             dest->fmt, output_ct);
+    return status;
+  }
   if (gainmap_metadata->version.compare(kJpegrVersion)) {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_UNSUPPORTED_FEATURE;
@@ -1467,14 +1585,17 @@ uhdr_error_info_t JpegR::applyGainMap(uhdr_raw_image_t* sdr_intent, uhdr_raw_ima
   UHDR_ERR_CHECK(uhdr_validate_gainmap_metadata_descriptor(gainmap_metadata));
   if (sdr_intent->fmt != UHDR_IMG_FMT_24bppYCbCr444 &&
       sdr_intent->fmt != UHDR_IMG_FMT_16bppYCbCr422 &&
-      sdr_intent->fmt != UHDR_IMG_FMT_12bppYCbCr420) {
+      sdr_intent->fmt != UHDR_IMG_FMT_12bppYCbCr420 &&
+      sdr_intent->fmt != UHDR_IMG_FMT_24bppRGB888 &&
+      sdr_intent->fmt != UHDR_IMG_FMT_32bppRGBA8888) {
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_UNSUPPORTED_FEATURE;
     status.has_detail = 1;
     snprintf(status.detail, sizeof status.detail,
              "apply gainmap method expects base image color format to be one of "
              "{UHDR_IMG_FMT_24bppYCbCr444, UHDR_IMG_FMT_16bppYCbCr422, "
-             "UHDR_IMG_FMT_12bppYCbCr420}. Received %d",
+             "UHDR_IMG_FMT_12bppYCbCr420, UHDR_IMG_FMT_24bppRGB888, UHDR_IMG_FMT_32bppRGBA8888}. "
+             "Received %d",
              sdr_intent->fmt);
     return status;
   }
@@ -1588,13 +1709,19 @@ uhdr_error_info_t JpegR::applyGainMap(uhdr_raw_image_t* sdr_intent, uhdr_raw_ima
                                        map_scale_factor, get_pixel_fn]() -> void {
     unsigned int width = sdr_intent->w;
     unsigned int rowStart, rowEnd;
+    const bool isSdrIntentRgb = isPixelFormatRgb(sdr_intent->fmt);
 
     while (jobQueue.dequeueJob(rowStart, rowEnd)) {
       for (size_t y = rowStart; y < rowEnd; ++y) {
         for (size_t x = 0; x < width; ++x) {
-          Color yuv_gamma_sdr = get_pixel_fn(sdr_intent, x, y);
-          // Assuming the sdr image is a decoded JPEG, we should always use Rec.601 YUV coefficients
-          Color rgb_gamma_sdr = p3YuvToRgb(yuv_gamma_sdr);
+          Color rgb_gamma_sdr;
+
+          if (isSdrIntentRgb) {
+            rgb_gamma_sdr = get_pixel_fn(sdr_intent, x, y);
+          } else {
+            Color yuv_gamma_sdr = get_pixel_fn(sdr_intent, x, y);
+            rgb_gamma_sdr = p3YuvToRgb(yuv_gamma_sdr);
+          }
           // We are assuming the SDR base image is always sRGB transfer.
 #if USE_SRGB_INVOETF_LUT
           Color rgb_sdr = srgbInvOetfLUT(rgb_gamma_sdr);
@@ -1739,7 +1866,8 @@ uhdr_error_info_t JpegR::extractPrimaryImageAndGainMap(uhdr_compressed_image_t* 
     uhdr_error_info_t status;
     status.error_code = UHDR_CODEC_INVALID_PARAM;
     status.has_detail = 1;
-    snprintf(status.detail, sizeof status.detail, "input uhdr image does not contain any valid images");
+    snprintf(status.detail, sizeof status.detail,
+             "input uhdr image does not contain any valid images");
     return status;
   }
 
@@ -1854,7 +1982,7 @@ uint8_t ScaleTo8Bit(float value) {
   return std::clamp(static_cast<int>(std::round(value * kMaxValFloat)), 0, kMaxValInt);
 }
 
-uhdr_error_info_t JpegR::toneMap(uhdr_raw_image_t* hdr_intent, uhdr_raw_image_t* sdr_intent) {
+uhdr_error_info_t UltraHdr::toneMap(uhdr_raw_image_t* hdr_intent, uhdr_raw_image_t* sdr_intent) {
   if (hdr_intent->fmt != UHDR_IMG_FMT_24bppYCbCrP010 &&
       hdr_intent->fmt != UHDR_IMG_FMT_30bppYCbCr444 &&
       hdr_intent->fmt != UHDR_IMG_FMT_32bppRGBA1010102 &&
